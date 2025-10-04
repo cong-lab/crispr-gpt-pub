@@ -4,9 +4,20 @@ from . import base_editing, knockout, prime_editing, act_rep, off_target
 from .logic import StateFinal, gradio_state_machine, EmptyState, EmptyStateFinal
 
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Dict, Type
 from util import get_logger
 logger = get_logger(__name__)
+
+# Whitelist mapping of valid task names to their corresponding state classes
+# This replaces the unsafe eval() usage
+VALID_TASK_MAPPING: Dict[str, Type[BaseState]] = {
+    'knockout.StateStep1': knockout.StateStep1,
+    'knockout.StateStep3': knockout.StateStep3,
+    'base_editing.StateError': base_editing.StateError,
+    'prime_editing.StateError': prime_editing.StateError,
+    'act_rep.StateError': act_rep.StateError,
+    'off_target.OffTarget': off_target.OffTarget,
+}
 
 @dataclass
 class ExecutorState:
@@ -71,16 +82,26 @@ class StateAutomate(BaseUserInputState):
 
     @classmethod
     def step(cls, user_message, **kwargs):
-        prompt = cls.prompt_process.format(user_message = user_message) 
+        prompt = cls.prompt_process.format(user_message = user_message)
         response = OpenAIChat.chat(prompt, use_GPT4=True)
-        tasks = response['Tasks']
-        logger.info(tasks)
-        tasks = [eval(x) for x in tasks]
+        task_names = response['Tasks']
+        logger.info(task_names)
+
+        # Safely resolve task names to state classes using whitelist
+        tasks = []
+        for task_name in task_names:
+            if task_name in VALID_TASK_MAPPING:
+                tasks.append(VALID_TASK_MAPPING[task_name])
+            else:
+                logger.warning(f"Invalid task name '{task_name}' not in whitelist. Skipping.")
+                # Optionally, you could raise an error here instead:
+                # raise ValueError(f"Invalid task name: {task_name}")
+
         tasks.insert(0, EmptyState)
-        tasks.append(EmptyStateFinal) 
-        executor = gradio_state_machine(task_list=tasks) 
+        tasks.append(EmptyStateFinal)
+        executor = gradio_state_machine(task_list=tasks)
         kwargs['memory']['executor'] = executor
-        executor.memory['flag_human_heritable_editing_ack'] = True  
+        executor.memory['flag_human_heritable_editing_ack'] = True
         kwargs['memory']['executor_state'] = ExecutorState(user_prompt=user_message, cached_message=[], flag_user_ack = True)
 
         return Result_ProcessUserInput(status='success', thoughts= response['Thoughts'] , result=user_message, response=str(response)),  StateAutomateStep
